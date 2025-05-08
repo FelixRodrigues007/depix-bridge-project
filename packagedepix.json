@@ -1,0 +1,20 @@
+{
+  "name": "depix-bridge",
+  "version": "1.0.0",
+  "main": "server_depix.js", 
+  "scripts": {
+    "start": "node server_depix.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "dependencies": {
+    "ecpair": "^2.1.0", 
+    "express": "^4.19.2", 
+    "liquidjs-lib": "^6.0.2-liquid.37",
+    "qrcode": "^1.5.3", 
+    "tiny-secp256k1": "^2.2.3"
+  }
+}
