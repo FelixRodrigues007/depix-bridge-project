@@ -1,35 +1,36 @@
 /**
- * DePix-Bridge – servidor Node/Express
- *  ↳ Gera payload EMV-QR (Pix) com valor fixo
- *  ↳ Gera QRCode base64
- *  ↳ Cria endereço Liquid P2WPKH
+ * DePix-Bridge • Node/Express
+ *  ↳ Gera payload EMV-QR (Pix) DINÂMICO com valor fixo
+ *  ↳ Retorna QR Code base64 + código “copia-e-cola”
+ *  ↳ Cria endereço Liquid P2WPKH para receber DePix
+ *  ▸ Deploy-ready para Render
  */
 
 const express = require("express");
 const qrcode  = require("qrcode");
 
 const { payments, networks } = require("liquidjs-lib");
-const ecc           = require("tiny-secp256k1");
-const ECPairFactory = require("ecpair").ECPairFactory;
-const ECPair        = ECPairFactory(ecc);
+const ecc            = require("tiny-secp256k1");
+const ECPairFactory  = require("ecpair").ECPairFactory;
+const ECPair         = ECPairFactory(ecc);
 
-// ----- Config --------------------------------------------------
+/* ───────────────────── Config ───────────────────── */
 const app  = express();
 const port = process.env.PORT || 10000;
 app.use(express.json());
 
-// ----- Dados do ativo DePix -----------------------------------
+/* ─────────────── Dados do ativo DePix ───────────── */
 const DEPIX_ASSET_ID  = "02f22f8d9c76ab41661a2729e4752e2c5d1a263012141b86ea98af5472df5189";
 const DEPIX_NAME      = "Decentralized Pix";
 const DEPIX_TICKER    = "DePix";
 const DEPIX_PRECISION = 8;
 const EXPLORER        = "https://blockstream.info/liquid/asset/";
 
-// ----- TLV helper ----------------------------------------------
+/* ───────────── TLV helper (tag-length-value) ─────── */
 const tlv = (tag, value = "") =>
   `${tag}${value.length.toString().padStart(2, "0")}${value}`;
 
-// ----- CRC16-CCITT --------------------------------------------
+/* ───────────── CRC16-CCITT (0x1021) ──────────────── */
 function calculateCRC16(payload) {
   let crc = 0xffff, poly = 0x1021;
   for (let i = 0; i < payload.length; i++) {
@@ -40,7 +41,7 @@ function calculateCRC16(payload) {
   return crc.toString(16).toUpperCase().padStart(4, "0");
 }
 
-// ----- Gera payload EMV-QR (Pix) ------------------------------
+/* ─────── Gera payload EMV-QR (Pix dinâmico) ─────── */
 function generatePixPayload(
   pixKey,
   amount,
@@ -48,37 +49,39 @@ function generatePixPayload(
   merchantName = "DEPX",
   merchantCity = "BRASIL"
 ) {
+  /* Sub-template 26 — Merchant Account Info */
   const merchantAccountInfo =
       tlv("00", "BR.GOV.BCB.PIX") +
       tlv("01", pixKey);
 
+  /* Additional Data (Tag 62) — TxID opcional */
   const addData = description
       ? tlv("62", tlv("05", description))
       : "";
 
+  /* Payload raiz */
   let payload =
-      tlv("00", "01") +                     // Payload Format Indicator
-      tlv("26", merchantAccountInfo) +      // Merchant Account Info
-      tlv("52", "0000") +                   // MCC
-      tlv("53", "986") +                    // Currency BRL
-      tlv("54", amount.toFixed(2)) +        // VALOR FIXO
+      tlv("00", "01") +          // Payload Format Indicator
+      tlv("01", "12") +          // **QR dinâmico (valor obrigatório)**
+      tlv("26", merchantAccountInfo) +
+      tlv("52", "0000") +        // MCC
+      tlv("53", "986") +         // Moeda: BRL
+      tlv("54", amount.toFixed(2)) + // Valor fixo
       tlv("58", "BR") +
       tlv("59", merchantName.toUpperCase().slice(0, 25)) +
       tlv("60", merchantCity.toUpperCase().slice(0, 15)) +
       addData +
-      "6304";                               // placeholder CRC
+      "6304";                   // Placeholder CRC
 
   return payload + calculateCRC16(payload);
 }
 
-// ----------------------------------------------------------------
-// Rotas
-// ----------------------------------------------------------------
+/* ─────────────────────── Rotas ───────────────────── */
 
-// Health-check
+/* Health-check */
 app.get("/", (_req, res) => res.send("Servidor DePix-Bridge ativo!"));
 
-// Info do ativo
+/* Info do ativo */
 app.get("/api/depix-info", (_req, res) => {
   res.json({
     asset_id: DEPIX_ASSET_ID,
@@ -89,7 +92,7 @@ app.get("/api/depix-info", (_req, res) => {
   });
 });
 
-// Novo endereço P2WPKH (Liquid)
+/* Novo endereço P2WPKH (Liquid) */
 app.get("/api/generate-depix-address", (_req, res) => {
   try {
     const keyPair     = ECPair.makeRandom();
@@ -103,7 +106,7 @@ app.get("/api/generate-depix-address", (_req, res) => {
   }
 });
 
-// QR Code Pix
+/* Gera QR Code Pix */
 app.get("/api/generate-pix-qrcode", async (req, res) => {
   const { pix_key, amount, description, merchant_name, merchant_city } = req.query;
 
@@ -139,5 +142,5 @@ app.get("/api/generate-pix-qrcode", async (req, res) => {
   }
 });
 
-// ----------------------------------------------------------------
+/* ─────────────────── Inicia servidor ─────────────── */
 app.listen(port, () => console.log(`DePix-Bridge rodando na porta ${port}`));
