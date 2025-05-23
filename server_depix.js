@@ -86,6 +86,88 @@ app.get("/api/generate-depix-qrcode", async (req, res) => {
   }
 });
 
+// Função para gerar o payload PIX no formato EMV
+function generatePixPayload(pixKey, amount, description = "", merchantName = "DePix", merchantCity = "Brasil") {
+  // Formato EMV para PIX
+  const merchantAccountInfo = `0014BR.GOV.BCB.PIX01${pixKey.length}${pixKey}`;
+  const transactionAmount = amount ? `5204${amount.toFixed(2).replace('.', '')}` : '';
+  const merchantNameField = `5907${merchantName}`;
+  const merchantCityField = `6006${merchantCity}`;
+  const additionalDataField = description ? `62${(description.length + 4).toString().padStart(2, '0')}05${description}` : '';
+  
+  // Montagem do payload PIX
+  let payload = `00020126${merchantAccountInfo.length}${merchantAccountInfo}${transactionAmount}5303986${merchantNameField}${merchantCityField}${additionalDataField}6304`;
+  
+  // Cálculo do CRC16 (implementação simplificada)
+  const crc = calculateCRC16(payload);
+  
+  return payload + crc;
+}
+
+// Função para calcular o CRC16
+function calculateCRC16(payload) {
+  // Implementação do algoritmo CRC16-CCITT
+  let crc = 0xFFFF;
+  const polynomial = 0x1021;
+  
+  for (let i = 0; i < payload.length; i++) {
+    crc ^= (payload.charCodeAt(i) << 8);
+    for (let j = 0; j < 8; j++) {
+      if (crc & 0x8000) {
+        crc = ((crc << 1) ^ polynomial) & 0xFFFF;
+      } else {
+        crc = (crc << 1) & 0xFFFF;
+      }
+    }
+  }
+  
+  return crc.toString(16).padStart(4, '0').toUpperCase();
+}
+
+// Rota para gerar um QR Code PIX
+app.get("/api/generate-pix-qrcode", async (req, res) => {
+  const { pix_key, amount, description, merchant_name, merchant_city } = req.query;
+  
+  if (!pix_key) {
+    return res.status(400).json({ error: "O parâmetro 'pix_key' é obrigatório." });
+  }
+  
+  if (!amount) {
+    return res.status(400).json({ error: "O parâmetro 'amount' é obrigatório." });
+  }
+  
+  try {
+    // Gerar o payload PIX
+    const pixPayload = generatePixPayload(
+      pix_key,
+      parseFloat(amount),
+      description || `Compra de ${amount} DePix`,
+      merchant_name || "DePix",
+      merchant_city || "Brasil"
+    );
+    
+    // Gerar o QR Code
+    const qrCodeDataURL = await qrcode.toDataURL(pixPayload, {
+      errorCorrectionLevel: 'M',
+      margin: 4,
+      width: 300
+    });
+    
+    // Gerar a URI de pagamento PIX
+    const paymentUri = `pix://${pix_key}?amount=${amount}&description=${encodeURIComponent(description || `Compra de ${amount} DePix`)}`;
+    
+    res.json({
+      qr_code_data_url: qrCodeDataURL,
+      pix_code: pixPayload,
+      payment_uri: paymentUri
+    });
+  } catch (error) {
+    console.error("Erro ao gerar QR Code PIX:", error);
+    res.status(500).json({ error: "Falha ao gerar QR Code PIX", details: error.message });
+  }
+});
+// Rota para verificar o status do servidor
+
 app.get("/", (req, res) => {
   res.send("Servidor DePix-Bridge está no ar!");
 });
