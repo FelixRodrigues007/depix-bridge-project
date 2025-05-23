@@ -176,4 +176,4 @@ app.listen(port, () => {
   console.log(`Servidor DePix-Bridge rodando na porta ${port}`);
 });
 
-/Adiciona endpoint para geração de QR Code PIX
+//Adiciona endpoint para geração de QR Code PIX
