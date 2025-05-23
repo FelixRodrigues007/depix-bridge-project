@@ -1,179 +1,155 @@
+/**
+ * DePix-Bridge – Node/Express server
+ * 1. Gera endereço Liquid (P2WPKH) para receber DePix
+ * 2. Gera payload EMV-QR (Pix) + QR Code base64 com valor fixo
+ *
+ * Deploy-ready para Render.com
+ */
+
 const express = require("express");
-const app = express();
-const port = process.env.PORT || 3001;
+const qrcode  = require("qrcode");
 
-// Informações públicas do token DePix
-const DEPIX_ASSET_ID = "02f22f8d9c76ab41661a2729e4752e2c5d1a263012141b86ea98af5472df5189";
-const DEPIX_NAME = "Decentralized Pix";
-const DEPIX_TICKER = "DePix";
+// -------- Liquid (endereço P2WPKH) ------------------------------
+const { payments, networks } = require("liquidjs-lib");
+const ecc            = require("tiny-secp256k1");
+const ECPairFactory  = require("ecpair").ECPairFactory;
+const ECPair         = ECPairFactory(ecc);
+
+// -------- Config ------------------------------------------------
+const app  = express();
+const port = process.env.PORT || 10000;          // Render injeta $PORT
+app.use(express.json());
+
+// ---- Metadados do ativo DePix ----------------------------------
+const DEPIX_ASSET_ID  = "02f22f8d9c76ab41661a2729e4752e2c5d1a263012141b86ea98af5472df5189";
+const DEPIX_NAME      = "Decentralized Pix";
+const DEPIX_TICKER    = "DePix";
 const DEPIX_PRECISION = 8;
-const LIQUID_EXPLORER_URL = "https://blockstream.info/liquid/asset/";
+const EXPLORER        = "https://blockstream.info/liquid/asset/";
 
-// Dependências para Liquid e QR Code
-const { payments, networks } = require("liquidjs-lib") ;
-const ecc = require("tiny-secp256k1");
-const { ECPairFactory } = require("ecpair");
-const qrcode = require("qrcode");
+// ----------------------------------------------------------------
+// Utilitário TLV (tag-length-value)
+const tlv = (tag, value = "") =>
+  `${tag}${value.length.toString().padStart(2, "0")}${value}`;
 
-const ECPair = ECPairFactory(ecc);
+// ---------- CRC16-CCITT (polinômio 0x1021) ----------------------
+function calculateCRC16(payload) {
+  let crc = 0xffff;
+  const polynomial = 0x1021;
 
-app.get("/api/depix-info", (req, res) => {
+  for (let i = 0; i < payload.length; i++) {
+    crc ^= payload.charCodeAt(i) << 8;
+    for (let j = 0; j < 8; j++) {
+      crc = crc & 0x8000
+        ? ((crc << 1) ^ polynomial) & 0xffff
+        : (crc << 1) & 0xffff;
+    }
+  }
+  return crc.toString(16).toUpperCase().padStart(4, "0");
+}
+
+// ---------- Payload EMV-QR para Pix -----------------------------
+function generatePixPayload(
+  pixKey,
+  amount,
+  description = "",
+  merchantName = "DEPX",
+  merchantCity = "BRASIL"
+) {
+  // Sub-template 26 – Merchant Account Information
+  const merchantAccountInfo =
+      tlv("00", "BR.GOV.BCB.PIX") +
+      tlv("01", pixKey);
+
+  // Additional Data (Tag 62) – TxID
+  const addData =
+      description ? tlv("62", tlv("05", description)) : "";
+
+  let payload =
+      tlv("00", "01") +                    // Payload Format Indicator
+      tlv("26", merchantAccountInfo) +     // Merchant Account Info
+      tlv("52", "0000") +                  // MCC
+      tlv("53", "986") +                   // Currency – BRL
+      tlv("54", amount.toFixed(2)) +       // Valor fixo
+      tlv("58", "BR") +                    // País
+      tlv("59", merchantName.toUpperCase().slice(0, 25)) +
+      tlv("60", merchantCity.toUpperCase().slice(0, 15)) +
+      addData +
+      "6304";                              // CRC placeholder
+
+  return payload + calculateCRC16(payload);
+}
+
+// ----------------------------------------------------------------
+// Rotas
+// ----------------------------------------------------------------
+
+// Health-check
+app.get("/", (_req, res) => res.send("Servidor DePix-Bridge ativo!"));
+
+// Dados públicos do ativo
+app.get("/api/depix-info", (_req, res) => {
   res.json({
     asset_id: DEPIX_ASSET_ID,
     name: DEPIX_NAME,
     ticker: DEPIX_TICKER,
     precision: DEPIX_PRECISION,
-    explorer_link: `${LIQUID_EXPLORER_URL}${DEPIX_ASSET_ID}`,
+    explorer_link: `${EXPLORER}${DEPIX_ASSET_ID}`,
   });
 });
 
-// Rota para gerar um novo endereço DePix (P2WPKH na Liquid)
-app.get("/api/generate-depix-address", (req, res) => {
+// Gera novo endereço P2WPKH na Liquid
+app.get("/api/generate-depix-address", (_req, res) => {
   try {
-    const keyPair = ECPair.makeRandom();
-    // Garantir que a publicKey é um Buffer
-    const publicKeyAsBuffer = Buffer.isBuffer(keyPair.publicKey) ? keyPair.publicKey : Buffer.from(keyPair.publicKey);
-    
-    const { address } = payments.p2wpkh({
-      pubkey: publicKeyAsBuffer, // Usar o Buffer explicitamente
+    const keyPair      = ECPair.makeRandom();
+    const { address }  = payments.p2wpkh({
+      pubkey: keyPair.publicKey,
       network: networks.liquid,
     });
 
-    res.json({
-      address: address,
-      message: "Este é um endereço padrão da Liquid (P2WPKH). Para transações confidenciais completas, a gestão de blinding keys é necessária.",
-    });
-  } catch (error) {
-    console.error("Erro ao gerar endereço DePix:", error);
-    res.status(500).json({ error: "Falha ao gerar endereço DePix", details: error.message });
+    res.json({ address });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Falha ao gerar endereço Liquid", details: err.message });
   }
 });
 
-// Rota para gerar um QR Code para um endereço DePix (ou Liquid)
-app.get("/api/generate-depix-qrcode", async (req, res) => {
-  const { address, amount, message } = req.query;
-
-  if (!address) {
-    return res.status(400).json({ error: "O parâmetro 'address' é obrigatório." });
-  }
-
-  let qrData = address;
-  const params = [];
-  if (amount) {
-    params.push(`amount=${encodeURIComponent(amount)}`);
-  }
-  if (amount) { // Adicionar assetid apenas se houver valor
-    const assetid = req.query.assetid || DEPIX_ASSET_ID;
-    params.push(`assetid=${encodeURIComponent(assetid)}`);
-  }
-  if (message) {
-    params.push(`message=${encodeURIComponent(message)}`);
-  }
-
-  if (params.length > 0) {
-    qrData = `liquidnetwork:${address}?${params.join("&")}`;
-  }
-
-  try {
-    const qrCodeDataURL = await qrcode.toDataURL(qrData);
-    res.json({
-      qr_code_data_url: qrCodeDataURL,
-      payment_uri: qrData,
-    });
-  } catch (error) {
-    console.error("Erro ao gerar QR Code:", error);
-    res.status(500).json({ error: "Falha ao gerar QR Code", details: error.message });
-  }
-});
-
-// Função para gerar o payload PIX no formato EMV
-function generatePixPayload(pixKey, amount, description = "", merchantName = "DePix", merchantCity = "Brasil") {
-  // Formato EMV para PIX
-  const merchantAccountInfo = `0014BR.GOV.BCB.PIX01${pixKey.length}${pixKey}`;
-  const transactionAmount = amount ? `5204${amount.toFixed(2).replace('.', '')}` : '';
-  const merchantNameField = `5907${merchantName}`;
-  const merchantCityField = `6006${merchantCity}`;
-  const additionalDataField = description ? `62${(description.length + 4).toString().padStart(2, '0')}05${description}` : '';
-  
-  // Montagem do payload PIX
-  let payload = `00020126${merchantAccountInfo.length}${merchantAccountInfo}${transactionAmount}5303986${merchantNameField}${merchantCityField}${additionalDataField}6304`;
-  
-  // Cálculo do CRC16 (implementação simplificada)
-  const crc = calculateCRC16(payload);
-  
-  return payload + crc;
-}
-
-// Função para calcular o CRC16
-function calculateCRC16(payload) {
-  // Implementação do algoritmo CRC16-CCITT
-  let crc = 0xFFFF;
-  const polynomial = 0x1021;
-  
-  for (let i = 0; i < payload.length; i++) {
-    crc ^= (payload.charCodeAt(i) << 8);
-    for (let j = 0; j < 8; j++) {
-      if (crc & 0x8000) {
-        crc = ((crc << 1) ^ polynomial) & 0xFFFF;
-      } else {
-        crc = (crc << 1) & 0xFFFF;
-      }
-    }
-  }
-  
-  return crc.toString(16).padStart(4, '0').toUpperCase();
-}
-
-// Rota para gerar um QR Code PIX
+// Gera QR Code Pix (valor em BRL → mintagem 1 DePix)
 app.get("/api/generate-pix-qrcode", async (req, res) => {
   const { pix_key, amount, description, merchant_name, merchant_city } = req.query;
-  
-  if (!pix_key) {
-    return res.status(400).json({ error: "O parâmetro 'pix_key' é obrigatório." });
-  }
-  
-  if (!amount) {
-    return res.status(400).json({ error: "O parâmetro 'amount' é obrigatório." });
-  }
-  
+
+  if (!pix_key)  return res.status(400).json({ error: "O parâmetro 'pix_key' é obrigatório." });
+  if (!amount)   return res.status(400).json({ error: "O parâmetro 'amount' é obrigatório." });
+
+  const value = parseFloat(amount);
+  if (isNaN(value) || value <= 0)
+    return res.status(400).json({ error: "Valor 'amount' inválido." });
+
   try {
-    // Gerar o payload PIX
     const pixPayload = generatePixPayload(
       pix_key,
-      parseFloat(amount),
-      description || `Compra de ${amount} DePix`,
+      value,
+      description   || `Compra DePIX #${Date.now()}`,
       merchant_name || "DePix",
       merchant_city || "Brasil"
     );
-    
-    // Gerar o QR Code
-    const qrCodeDataURL = await qrcode.toDataURL(pixPayload, {
-      errorCorrectionLevel: 'M',
+
+    const qr_code_data_url = await qrcode.toDataURL(pixPayload, {
+      errorCorrectionLevel: "M",
       margin: 4,
-      width: 300
+      width: 300,
     });
-    
-    // Gerar a URI de pagamento PIX
-    const paymentUri = `pix://${pix_key}?amount=${amount}&description=${encodeURIComponent(description || `Compra de ${amount} DePix`)}`;
-    
-    res.json({
-      qr_code_data_url: qrCodeDataURL,
-      pix_code: pixPayload,
-      payment_uri: paymentUri
-    });
-  } catch (error) {
-    console.error("Erro ao gerar QR Code PIX:", error);
-    res.status(500).json({ error: "Falha ao gerar QR Code PIX", details: error.message });
+
+    const payment_uri = `pix://${encodeURIComponent(pix_key)}?amount=${value.toFixed(
+      2
+    )}&description=${encodeURIComponent(description || "Compra DePIX")}`;
+
+    res.json({ qr_code_data_url, pix_code: pixPayload, payment_uri });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Falha ao gerar QR Code PIX", details: err.message });
   }
 });
-// Rota para verificar o status do servidor
 
-app.get("/", (req, res) => {
-  res.send("Servidor DePix-Bridge está no ar!");
-});
-
-app.listen(port, () => {
-  console.log(`Servidor DePix-Bridge rodando na porta ${port}`);
-});
-
-//Adiciona endpoint para geração de QR Code PIX
+// ----------------------------------------------------------------
+app.listen(port, () => console.log(`DePix-Bridge rodando na porta ${port}`));
