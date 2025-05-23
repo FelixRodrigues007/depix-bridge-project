@@ -1,10 +1,20 @@
-"dependencies": {
-  "express": "^4.19.2",
-  "qrcode": "^1.5.3",
-  "liquidjs-lib": "6.0.2-liquid.37",
-  "tiny-secp256k1": "^1.6.3",
-  "ecpair": "^2.1.0"
-},
-"engines": {
-  "node": ">=18 <25"
+{
+  "name": "depix-bridge-project",
+  "version": "1.0.0",
+  "description": "Bridge server to gerar Pix QR codes e endereços Liquid para o token DePix",
+  "main": "server_depix.js",
+  "scripts": {
+    "start": "node server_depix.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "qrcode": "^1.5.3",
+    "liquidjs-lib": "6.0.2-liquid.37",
+    "tiny-secp256k1": "^1.6.3",
+    "ecpair": "^2.1.0"
+  },
+  "engines": {
+    "node": ">=18 <25"
+  },
+  "license": "MIT"
 }
