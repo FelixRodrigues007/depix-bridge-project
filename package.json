@@ -10,7 +10,7 @@
     "express": "^4.19.2",
     "qrcode": "^1.5.3",
     "liquidjs-lib": "6.0.2-liquid.37",
-    "tiny-secp256k1": "^1.6.3",
+    "tiny-secp256k1": "^2.2.3"
     "ecpair": "^2.1.0"
   },
   "engines": {
