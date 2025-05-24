@@ -1,9 +1,9 @@
 /**
- * DePix-Bridge  —  versão 2025-05-24
- *  ✔ QR dinâmico (Tag 01 = 12)
- *  ✔ Valor fixo (Tag 54)
- *  ✔ Sanitiza chave telefone e TXID
- *  ✔ Endpoint /api/qr devolve PNG 512 px
+ * DePix-Bridge  —  versão 2025-05-24 (modificada)
+ * ✔ QR dinâmico (Tag 01 = 12)
+ * ✔ Valor fixo ou aberto (Tag 54 opcional)
+ * ✔ Sanitiza chave telefone e TXID
+ * ✔ Endpoint /api/qr devolve PNG 512 px
  */
 
 const express = require("express");
@@ -48,13 +48,16 @@ function buildPayload(pixKey,amount,txid,merchant="DEPX",city="BRASIL"){
   const mInfo = tlv("00","BR.GOV.BCB.PIX")+tlv("01",pixKey);
   const add   = tlv("62", tlv("05", txid));
 
+  // Se o valor não for positivo, o campo do valor fica vazio
+  const amountField = (amount > 0) ? tlv("54",amount.toFixed(2)) : "";
+
   let p =
     tlv("00","01") +               // format indicator
     tlv("01","12") +               // QR dinâmico
     tlv("26",mInfo) +
     tlv("52","0000") +
     tlv("53","986") +
-    tlv("54",amount.toFixed(2)) +
+    amountField +                  // Adiciona o valor apenas se ele existir
     tlv("58","BR") +
     tlv("59",merchant.slice(0,25).toUpperCase()) +
     tlv("60",city.slice(0,15).toUpperCase()) +
@@ -70,25 +73,36 @@ app.get("/",(_,res)=>res.send("DePix-Bridge OK"));
 app.get("/api/generate-pix-qrcode", async (req,res)=>{
   let { pix_key, amount, description="DEPX" } = req.query;
   if(!pix_key) return res.status(400).json({error:"pix_key obrigatório"});
-  if(!amount)  return res.status(400).json({error:"amount obrigatório"});
 
-  const value=parseFloat(amount);
-  if(isNaN(value)||value<=0) return res.status(400).json({error:"amount inválido"});
+  // O valor agora é opcional. Se for fornecido, deve ser um número válido.
+  let value = 0.0;
+  if (amount) {
+    value = parseFloat(amount);
+    if (isNaN(value) || value < 0) { // Permite 0, mas não negativo
+      return res.status(400).json({error:"amount inválido"});
+    }
+  }
 
   const cleanKey  = cleanPixKey(pix_key);
   const txid      = cleanTxid(description);
 
-  const payload   = buildPayload(cleanKey,value,txid);
+  // A função buildPayload omitirá o campo de valor se 'value' for 0
+  const payload   = buildPayload(cleanKey, value, txid);
   const pngBase64 = await qrcode.toDataURL(payload,{margin:8,width:512});
   const qrLink    = `${req.protocol}://${req.get("host")}/api/qr?payload=${encodeURIComponent(payload)}`;
+
+  // Também torna o valor opcional no URI de pagamento
+  const amountUriPart = value > 0 ? `&amount=${value.toFixed(2)}` : "";
+  const paymentUri = `pix://${cleanKey}?description=${txid}${amountUriPart}`.replace('?&', '?');
 
   res.json({
     pix_code: payload,
     qr_code_data_url: pngBase64,
     qr_link: qrLink,
-    payment_uri: `pix://${cleanKey}?amount=${value.toFixed(2)}&description=${txid}`
+    payment_uri: paymentUri
   });
 });
+
 
 app.get("/api/qr", async (req,res)=>{
   const {payload}=req.query;
